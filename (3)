@@ -1,0 +1,89 @@
+# v_p, iaplus_p, aplus_pは、年金制度がある場合の価値関数と政策関数を初期化する。
+# JJは期間数、NAは資産グリッドの点数、NLは生産性タイプの数。
+v_p = np.zeros((JJ, NA, NL))
+iaplus_p = np.zeros((JJ, NA, NL), dtype=int)
+aplus_p = np.zeros((JJ, NA, NL))
+
+# backward induction (年金制度がある場合)
+
+# period 3 (老年期) の計算。
+# 老年期は労働所得がないが、ここでは年金 (ppp) を受け取る。
+# 消費は、期初資産に利子がついたもの (1.0+r)*a[ia] に、年金 (ppp) を加えたものとなる。
+# その消費から得られる効用を価値関数 v_p[2, ia, :] に格納する。
+for ia in range(NA):
+    v_p[2, ia, :] = util((1.0+r)*a[ia]+ppp, gamma)
+
+
+# period 2 (中年期) の計算。
+# 中年期には労働所得 l[il] を得るが、これに税金 (tax) が課される。
+for il in range(NL): # 今期（中年期）の生産性タイプごとにループ
+    for ia in range(NA): # 今期の期初資産ごとにループ
+        reward = np.zeros(NA) # 各次期資産選択肢に対する報酬を格納する配列
+        # 次期に持ち越す貯蓄 (aplus_p) を探索するループ
+        for iap in range(NA):
+
+            # 将来の期待価値 (EV) を計算する。
+            # 中年期の生産性タイプ il から老年期の生産性タイプ ilp への遷移確率 prob[il, ilp] を使い、
+            # 老年期の価値関数 v_p[2, iap, ilp] を加重平均する。
+            EV = 0.0
+            for ilp in range(NL):
+                EV += prob[il, ilp]*v_p[2, iap, ilp]
+
+            # 現在の消費から得られる効用と、割引された将来の期待効用の合計を計算し、rewardに格納する。
+            # l[il]*(1 - tax) は税引き後の労働所得。
+            reward[iap] = util(l[il]*(1 - tax) + (1.0+r)*a[ia] - a[iap], gamma) + beta*EV
+
+        # rewardが最大となる次期資産のインデックス (iaplus_p[1, ia, il]) を見つけ、格納する。
+        iaplus_p[1, ia, il] = np.argmax(reward)
+        # そのインデックスに対応する実際の資産額を aplus_p[1, ia, il] に格納する。
+        aplus_p[1, ia, il] = a[iaplus_p[1, ia, il]]
+        # その時の最大報酬を価値関数 v_p[1, ia, il] に格納する。
+        v_p[1, ia, il] = reward[iaplus_p[1, ia, il]]
+
+# period 1 (若年期) の計算。
+# 若年期の労働所得 l[il] には税金は課されない。
+for il in range(NL): # 今期（若年期）の生産性タイプごとにループ
+    for ia in range(NA): # 今期の期初資産ごとにループ
+        reward = np.zeros(NA)
+        # 次期に持ち越す貯蓄 (aplus_p) を探索するループ
+        for iap in range(NA):
+
+            # 将来の期待価値 (EV) を計算する。
+            # 若年期の生産性タイプ il から中年期の生産性タイプ ilp への遷移確率 prob[il, ilp] を使い、
+            # 中年期の価値関数 v_p[1, iap, ilp] を加重平均する。
+            EV = 0.0
+            for ilp in range(NL):
+                EV += prob[il, ilp]*v_p[1, iap, ilp]
+
+            # 現在の消費から得られる効用と、割引された将来の期待効用の合計を計算し、rewardに格納する。
+            cons_curr = l[il] + (1.0+r)*a[ia] - a[iap] # 若年期の所得には税金がかからない
+            reward[iap] = util(cons_curr, gamma) + beta*EV
+
+        # rewardが最大となる次期資産のインデックス (iaplus_p[0, ia, il]) を見つけ、格納する。
+        iaplus_p[0, ia, il] = np.argmax(reward)
+        # そのインデックスに対応する実際の資産額を aplus_p[0, ia, il] に格納する。
+        aplus_p[0, ia, il] = a[iaplus_p[0, ia, il]]
+        # その時の最大報酬を価値関数 v_p[0, ia, il] に格納する。
+        v_p[0, ia, il] = reward[iaplus_p[0, ia, il]]
+
+# --- 政策関数のグラフ描画 ---
+# 年金制度がない場合 (aplus) と年金制度がある場合 (aplus_p) の若年期の貯蓄政策関数を比較する。
+plt.figure()
+# 年金制度がない場合の貯蓄政策関数を実線でプロットする。
+plt.plot(a, aplus[0, :, 0], label='no pension: Low')
+plt.plot(a, aplus[0, :, 1], label='no pension: Mid')
+plt.plot(a, aplus[0, :, 2], label='no pension: High')
+
+# 年金制度がある場合の貯蓄政策関数を破線でプロットする。
+# 色を分けて視覚的に区別しやすくする。
+plt.plot(a, aplus_p[0, :, 0], '--', label='pension: Low', color='blue')
+plt.plot(a, aplus_p[0, :, 1], '--', label='pension: Mid', color='coral')
+plt.plot(a, aplus_p[0, :, 2], '--', label='pension: High', color='green')
+
+plt.title("政策関数: 年金制度の有無") # グラフのタイトル
+plt.xlabel("若年期期初の利子を除く資産") # 横軸のラベル
+plt.ylabel("次期の利子を除く資産 (貯蓄)") # 縦軸のラベル
+plt.ylim(a_l, a_u) # 縦軸の表示範囲を設定
+plt.grid(True) # グリッド線を表示
+plt.legend() # 凡例を表示
+plt.show() # グラフを表示する
