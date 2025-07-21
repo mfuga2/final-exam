@@ -1,0 +1,150 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import minimize_scalar 
+
+# --- パラメータ設定 ---
+# 効用関数を定義する。消費(cons)から得られる効用を計算する。
+# gamma=2.0の場合、U(c) = -1/c となる。
+# 消費がゼロに近づくと効用が負の無限大に発散するのを防ぐため、
+# consと1e-4のうち大きい方を取ることで数値計算の安定性を高めている。
+def util(cons, gamma):
+    return max(cons, 1e-4)**(1.0-gamma)/(1.0-gamma)
+
+gamma = 2.0  # 危険回避度。問題で与えられた値。
+beta = 0.985**20 # 割引因子。1期間(20年)の割引率を表す。問題で与えられた値。
+r = 1.025**20 - 1.0 # 利子率。1期間(20年)あたりの利子率。問題で与えられた値。
+JJ = 3 # 期間数 (若年期、中年期、老年期の3期間)。
+l = np.array([0.8027, 1.0, 1.2457]) # 各期間の労働所得の生産性タイプ。
+NL = len(l) # 生産性タイプの数。
+prob = np.array([ # 労働所得の遷移行列 P。若年期の所得タイプから中年期の所得タイプへの遷移確率。
+    [0.7451, 0.2528, 0.0021],
+    [0.1360, 0.7281, 0.1360],
+    [0.0021, 0.2528, 0.7451]
+])
+mu_1 = np.array([1.0/NL, 1.0/NL, 1.0/NL]) # 若年期の各生産性タイプの人口比率 (すべて1/3)。
+mu_2 = np.zeros(NL) # 中年期の各生産性タイプの人口比率 (このシミュレーションでは直接使わない)。
+
+# mu_2 の計算 (このシミュレーションの計算ロジックには直接影響しないが、定義は可能)
+for il in range(NL):
+    for ilp in range(NL):
+        mu_2[ilp] += prob[il, ilp]*mu_1[il]
+
+
+# --- 資産グリッドの設定 ---
+a_l = 0.0 # 資産の下限。負の資産（借入）は不可。
+a_u = 3.0 # 資産の上限。計算範囲を限定するため。この値は適宜調整可能。
+NA = 100 # 資産グリッドの点数。多ければ計算精度は上がるが、計算時間は長くなる。
+a = np.linspace(a_l, a_u, NA) # 均等な間隔で資産グリッドを生成する。
+
+# --- 変数の初期化 ---
+# 価値関数 v[期間][期初資産インデックス][生産性タイプインデックス]
+# 各状態において個人が達成できる最大期待生涯効用を格納する。
+v = np.zeros((JJ, NA, NL))
+
+# 政策関数 (次期の資産選択)
+# iaplus[期間][期初資産インデックス][生産性タイプインデックス]
+# 各状態において最適な次期資産のグリッドインデックスを格納する。
+iaplus = np.zeros((JJ, NA, NL), dtype=int)
+
+# aplus[期間][期初資産インデックス][生産性タイプインデックス]
+# 各状態において最適な次期資産の実際の値を格納する。これが貯蓄の政策関数となる。
+aplus = np.zeros((JJ, NA, NL))
+
+# --- バックワード誘導 (動的計画法) ---
+# 最終期間から逆向きに問題を解き、最適な意思決定を導く。
+
+# Period 3 (老年期: t=2)
+# 老年期は労働所得がなく、年金もない (問1の前提)。
+# 期初資産 (a[ia]) に利子がついたもの (1.0+r)*a[ia] をすべて消費する。
+for ia in range(NA):
+    # 老年期は労働所得がなく、生産性タイプによらず同じ効用値となる。
+    v[2, ia, :] = util((1.0+r)*a[ia], gamma)
+
+
+# Period 2 (中年期: t=1)
+# 中年期には労働所得 l[il] を得る。
+for il in range(NL): # 今期（中年期）の生産性タイプ
+    for ia in range(NA): # 今期の期初資産
+        max_reward = -np.inf # この状態での最大効用を初期化
+        best_iap_idx = -1    # 最適な次期資産インデックスを初期化
+
+        # 次期資産 (iaplus, aplus) を探索ループ
+        # 現在の資産と所得から、次期に持ち越す貯蓄 (a[iap]) を変えながら探索する。
+        for iap in range(NA):
+            # 今期の消費を計算: (現在の労働所得 + 期初資産*総利子率) - 次期資産
+            cons_curr = l[il] + (1.0+r)*a[ia] - a[iap]
+
+            if cons_curr <= 0: # 消費が0以下になる場合は不適格 (効用が無限小になるため)
+                continue
+
+            # 将来の期待価値 (期待生涯効用) を計算
+            # 遷移行列 prob を使い、次期（老年期）の各生産性タイプへの遷移確率で価値関数を重み付けする。
+            # 老年期は生産性タイプによらず価値関数は同じだが、形式的に期待値を計算する。
+            EV = 0.0
+            for ilp_next in range(NL): # 次期（老年期）の生産性タイプへの遷移
+                EV += prob[il, ilp_next] * v[2, iap, ilp_next]
+
+            # 現在の効用と割引された将来の期待効用の合計を計算
+            current_total_utility = util(cons_curr, gamma) + beta*EV
+
+            # より良い選択が見つかった場合は更新
+            if current_total_utility > max_reward:
+                max_reward = current_total_utility
+                best_iap_idx = iap
+
+        # 最適な貯蓄選択とその時の価値関数を格納する。
+        v[1, ia, il] = max_reward
+        iaplus[1, ia, il] = best_iap_idx
+        aplus[1, ia, il] = a[best_iap_idx]
+
+# Period 1 (若年期: t=0)
+# 若年期には労働所得 l[il] を得る。
+for il in range(NL): # 今期（若年期）の生産性タイプ
+    for ia in range(NA): # 今期の期初資産 (親からの遺産など)
+        max_reward = -np.inf
+        best_iap_idx = -1
+
+        # 次期資産 (iaplus, aplus) を探索ループ
+        for iap in range(NA):
+            # 今期の消費を計算する。
+            cons_curr = l[il] + (1.0+r)*a[ia] - a[iap]
+
+            if cons_curr <= 0:
+                continue
+
+            # 将来の期待価値を計算する。
+            # 遷移行列 prob を使い、次期（中年期）の各生産性タイプへの遷移確率で価値関数を重み付けする。
+            EV = 0.0
+            for ilp_next in range(NL): # 次期（中年期）の生産性タイプへの遷移
+                EV += prob[il, ilp_next] * v[1, iap, ilp_next]
+
+            # 現在の効用と割引された将来の期待効用の合計を計算する。
+            current_total_utility = util(cons_curr, gamma) + beta*EV
+
+            # より良い選択が見つかった場合は更新する。
+            if current_total_utility > max_reward:
+                max_reward = current_total_utility
+                best_iap_idx = iap
+
+        # 最適な貯蓄選択とその時の価値関数を格納する。
+        v[0, ia, il] = max_reward
+        iaplus[0, ia, il] = best_iap_idx
+        aplus[0, ia, il] = a[best_iap_idx]
+
+# --- 貯蓄の政策関数のグラフ描画 ---
+# 若年期（Period 1）における貯蓄の政策関数を図示する。
+# 横軸は若年期期初の利子を除く資産、縦軸は次期の利子を除く資産（貯蓄）だ。
+# 異なる生産性タイプごとに線を分けて描画する。
+plt.figure(figsize=(10, 6)) # グラフのサイズを設定する。
+
+plt.plot(a, aplus[0, :, 0], label=f'低生産性 ({l[0]:.4f})') # 低生産性タイプ
+plt.plot(a, aplus[0, :, 1], label=f'中生産性 ({l[1]:.4f})') # 中生産性タイプ
+plt.plot(a, aplus[0, :, 2], label=f'高生産性 ({l[2]:.4f})') # 高生産性タイプ
+
+plt.title("若年期の貯蓄政策関数 (年金なし)") # グラフのタイトル。
+plt.xlabel("若年期期初の利子を除く資産") # 横軸のラベル。
+plt.ylabel("次期の利子を除く資産 (貯蓄)") # 縦軸のラベル。
+plt.ylim(a_l, a_u) # 縦軸の表示範囲を資産グリッドの下限から上限までに設定する。
+plt.grid(True) # グリッド線を表示する。
+plt.legend() # 凡例を表示する。
+plt.show() # グラフを表示する。
